@@ -20,7 +20,8 @@ def init_db():
             additional TEXT,
             status TEXT DEFAULT 'Pending',
             last_updated TEXT,
-            updated_by TEXT
+            updated_by TEXT,
+            is_deleted INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
@@ -31,10 +32,13 @@ init_db()
 def get_db():
     return sqlite3.connect('sales_orders.db')
 
-def load_orders():
+def load_orders(include_deleted=False):
     conn = get_db()
-    df = pd.read_sql_query("SELECT * FROM orders ORDER BY id DESC", conn)
+    query = "SELECT * FROM orders ORDER BY id DESC"
+    df = pd.read_sql_query(query, conn)
     conn.close()
+    if not include_deleted:
+        df = df[df['is_deleted'] == 0]
     return df if not df.empty else pd.DataFrame()
 
 def get_next_order_id():
@@ -46,7 +50,6 @@ def get_next_order_id():
     
     if last is None:
         return "2026-27/ORD/1"
-    
     try:
         last_num = int(last[0].split('/')[-1])
         return f"2026-27/ORD/{last_num + 1}"
@@ -68,6 +71,17 @@ def update_order_status(order_id, new_status, updated_by):
         SET status = ?, last_updated = ?, updated_by = ?
         WHERE id = ?
     """, (new_status, now, updated_by, order_id))
+    conn.commit()
+    conn.close()
+
+def soft_delete_order(order_id, deleted_by):
+    conn = get_db()
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn.execute("""
+        UPDATE orders 
+        SET is_deleted = 1, last_updated = ?, updated_by = ?
+        WHERE id = ?
+    """, (now, deleted_by, order_id))
     conn.commit()
     conn.close()
 
@@ -113,10 +127,10 @@ tab1, tab2 = st.tabs(["📋 Dashboard", "➕ New Order"])
 
 with tab1:
     st.subheader("All Sales Orders")
-    df = load_orders()
+    df = load_orders(include_deleted=True)   # Admin sees deleted too
     
     if df.empty:
-        st.info("No orders yet. Create your first order in the 'New Order' tab.")
+        st.info("No orders yet.")
     else:
         status_filter = st.selectbox("Filter by Status", 
                                    ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
@@ -125,18 +139,24 @@ with tab1:
             df = df[df['status'] == status_filter]
         
         for _, row in df.iterrows():
+            is_deleted = row['is_deleted'] == 1
+            opacity = "0.6" if is_deleted else "1"
+            
             with st.container(border=True):
-                col1, col2, col3 = st.columns([3, 2, 2])
+                col1, col2, col3 = st.columns([3.5, 2, 2.5])
                 
                 with col1:
-                    st.write(f"**{row['id']}** — {row['product']}")
+                    if is_deleted:
+                        st.write(f"~~**{row['id']}** — {row['product']}~~")
+                    else:
+                        st.write(f"**{row['id']}** — {row['product']}")
+                    
                     st.caption(f"👤 {row.get('customer', '—')} | Qty: **{row['qty']}**")
                     
-                    # Technical Requirements & Additional Info - Clearly Visible
+                    # Technical & Additional Info - Always Visible
                     if row['tech_req']:
                         st.markdown("**🔧 Technical Requirements:**")
                         st.info(row['tech_req'])
-                    
                     if row['additional']:
                         st.markdown("**📋 Additional Information:**")
                         st.info(row['additional'])
@@ -146,42 +166,53 @@ with tab1:
                     colors = {"Pending":"orange", "In Production":"blue", "Ready for Dispatch":"green", 
                              "Invoiced":"purple", "Shipped":"gray"}
                     color = colors.get(row['status'], "gray")
-                    st.markdown(f"**Status:** <span style='color:{color}'>{row['status']}</span>", unsafe_allow_html=True)
+                    status_text = f"~~{row['status']}~~" if is_deleted else row['status']
+                    st.markdown(f"**Status:** <span style='color:{color}'>{status_text}</span>", unsafe_allow_html=True)
                 
                 with col3:
-                    if role == "Production":
-                        if row['status'] == "Pending":
-                            if st.button("▶️ Start Production", key=f"start_{row['id']}"):
-                                update_order_status(row['id'], "In Production", st.session_state.name)
-                                st.rerun()
-                        elif row['status'] == "In Production":
-                            if st.button("✅ Mark Ready for Dispatch", key=f"ready_{row['id']}"):
-                                update_order_status(row['id'], "Ready for Dispatch", st.session_state.name)
-                                st.rerun()
+                    if is_deleted:
+                        st.markdown("<span style='color:gray'>🗑️ **Deleted**</span>", unsafe_allow_html=True)
+                    else:
+                        if role == "Production":
+                            if row['status'] == "Pending":
+                                if st.button("▶️ Start Production", key=f"start_{row['id']}"):
+                                    update_order_status(row['id'], "In Production", st.session_state.name)
+                                    st.rerun()
+                            elif row['status'] == "In Production":
+                                if st.button("✅ Mark Ready", key=f"ready_{row['id']}"):
+                                    update_order_status(row['id'], "Ready for Dispatch", st.session_state.name)
+                                    st.rerun()
+                        
+                        elif role == "Logistics":
+                            if row['status'] == "Ready for Dispatch":
+                                if st.button("📄 Generate Invoice", key=f"inv_{row['id']}"):
+                                    update_order_status(row['id'], "Invoiced", st.session_state.name)
+                                    st.success("✅ Tax Invoice Generated!")
+                                    st.rerun()
+                            elif row['status'] == "Invoiced":
+                                if st.button("🚚 Mark Shipped", key=f"ship_{row['id']}"):
+                                    update_order_status(row['id'], "Shipped", st.session_state.name)
+                                    st.success("✅ Order Shipped!")
+                                    st.rerun()
                     
-                    elif role == "Logistics":
-                        if row['status'] == "Ready for Dispatch":
-                            if st.button("📄 Generate Invoice", key=f"inv_{row['id']}"):
-                                update_order_status(row['id'], "Invoiced", st.session_state.name)
-                                st.success("✅ Tax Invoice Generated!")
+                    # Admin Delete Button
+                    if role == "Admin" and not is_deleted:
+                        if st.button("🗑️ Delete Order", key=f"del_{row['id']}", type="secondary"):
+                            if st.checkbox("Confirm Delete?", key=f"conf_{row['id']}"):
+                                soft_delete_order(row['id'], st.session_state.name)
+                                st.success(f"Order {row['id']} deleted.")
                                 st.rerun()
-                        elif row['status'] == "Invoiced":
-                            if st.button("🚚 Mark Shipped", key=f"ship_{row['id']}"):
-                                update_order_status(row['id'], "Shipped", st.session_state.name)
-                                st.success("✅ Order Shipped!")
-                                st.rerun()
-                
+
                 st.caption(f"Last updated: {row.get('last_updated', '')} by {row.get('updated_by', '')}")
 
 with tab2:
     if role == "Admin":
         st.subheader("Create New Sales Order")
         with st.form("new_order_form", clear_on_submit=True):
-            product = st.text_input("Product Name *", placeholder="High-Precision Gearbox")
+            product = st.text_input("Product Name *")
             qty = st.number_input("Quantity *", min_value=1, value=10)
-            exp_date = st.date_input("Expected Dispatch Date", 
-                                   datetime.date.today() + datetime.timedelta(days=15))
-            customer = st.text_input("Customer Name", placeholder="Tata Motors")
+            exp_date = st.date_input("Expected Dispatch Date", datetime.date.today() + datetime.timedelta(days=15))
+            customer = st.text_input("Customer Name")
             tech_req = st.text_area("Technical Requirements", height=120)
             additional = st.text_area("Additional Information", height=100)
             
@@ -198,16 +229,12 @@ with tab2:
                     "additional": additional,
                     "status": "Pending",
                     "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "updated_by": st.session_state.name
+                    "updated_by": st.session_state.name,
+                    "is_deleted": 0
                 }
                 save_order(order)
                 st.success(f"🎉 Order **{new_id}** created successfully!")
     else:
         st.warning("🔒 Only **Admin** can create new orders.")
 
-st.sidebar.info("""
-**Workflow:**
-Admin → Creates Order (2026-27/ORD/1 onwards)
-Production → Sees Tech Req & Additional Info clearly
-Logistics → Invoice & Ship
-""")
+st.sidebar.info("**Deleted orders** are visible to all but greyed out.")
