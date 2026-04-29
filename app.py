@@ -9,31 +9,6 @@ st.title("🚚 Sales Order Tracking Dashboard")
 # ====================== SUPABASE CONNECTION ======================
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# Initialize table safely
-def init_table():
-    try:
-        # Create table if it doesn't exist
-        conn.query("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id TEXT PRIMARY KEY,
-                product TEXT,
-                qty INTEGER,
-                expected_dispatch TEXT,
-                customer TEXT,
-                tech_req TEXT,
-                additional TEXT,
-                status TEXT DEFAULT 'Pending',
-                last_updated TEXT,
-                updated_by TEXT,
-                is_deleted INTEGER DEFAULT 0
-            )
-        """, ttl=0).execute()
-        st.success("✅ Database table ready", icon="🔧")
-    except Exception as e:
-        st.error(f"Table init error: {e}")
-
-init_table()
-
 # ====================== HELPER FUNCTIONS ======================
 def load_orders(include_deleted=False):
     try:
@@ -50,17 +25,18 @@ def load_orders(include_deleted=False):
             df = df[df['is_deleted'] == 0]
         
         return df.sort_values(by='id', ascending=False)
-    except:
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
         return pd.DataFrame()
 
 def get_next_order_id():
     try:
         response = conn.query("id", table="orders", ttl=0).execute()
-        data = response.data
+        data = response.data or []
         if not data:
             return "2026-27/ORD/1"
         
-        last_id = max([item['id'] for item in data])
+        last_id = max(item['id'] for item in data)
         try:
             last_num = int(last_id.split('/')[-1])
             return f"2026-27/ORD/{last_num + 1}"
@@ -143,7 +119,7 @@ with tab1:
     df = load_orders(include_deleted=True)
     
     if df.empty:
-        st.info("No orders yet. Create your first one in the New Order tab.")
+        st.info("No orders yet. Create your first one!")
     else:
         status_filter = st.selectbox("Filter by Status", ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
         if status_filter != "All":
@@ -233,8 +209,8 @@ with tab2:
                 if save_order(order):
                     st.success(f"🎉 Order **{new_id}** created successfully!")
                 else:
-                    st.error("Failed to create order")
+                    st.error("Failed to save order. Check Supabase connection.")
     else:
         st.warning("Only Admin can create orders.")
 
-st.sidebar.info("✅ Connected to Supabase (Persistent Database)")
+st.sidebar.info("✅ Connected to Supabase")
