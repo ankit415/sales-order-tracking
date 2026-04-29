@@ -9,11 +9,10 @@ st.title("🚚 Sales Order Tracking Dashboard")
 # ====================== SUPABASE CONNECTION ======================
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# ====================== HELPER FUNCTIONS ======================
+# ====================== HELPER FUNCTIONS (Fixed Syntax) ======================
 def load_orders(include_deleted=False):
     try:
-        # Correct syntax for this connector
-        response = conn.query("*", table="orders", ttl=0).execute()
+        response = conn.table("orders").select("*").execute()
         df = pd.DataFrame(response.data) if response.data else pd.DataFrame()
         
         if df.empty:
@@ -26,17 +25,18 @@ def load_orders(include_deleted=False):
         
         return df.sort_values(by='id', ascending=False)
     except Exception as e:
-        st.error(f"❌ Error loading orders: {str(e)}")
+        st.error(f"❌ Could not load orders: {str(e)}")
+        st.info("Make sure the 'orders' table exists in Supabase.")
         return pd.DataFrame()
 
 def get_next_order_id():
     try:
-        response = conn.query("id", table="orders", ttl=0).execute()
+        response = conn.table("orders").select("id").execute()
         data = response.data or []
         if not data:
             return "2026-27/ORD/1"
         
-        last_id = max([item['id'] for item in data])
+        last_id = max(item['id'] for item in data)
         try:
             last_num = int(last_id.split('/')[-1])
             return f"2026-27/ORD/{last_num + 1}"
@@ -50,7 +50,7 @@ def save_order(order_dict):
         conn.table("orders").insert(order_dict).execute()
         return True
     except Exception as e:
-        st.error(f"Save error: {e}")
+        st.error(f"Save failed: {e}")
         return False
 
 def update_order_status(order_id, new_status, updated_by):
@@ -120,7 +120,7 @@ with tab1:
     df = load_orders(include_deleted=True)
     
     if df.empty:
-        st.info("No orders yet. Create your first one!")
+        st.info("No orders yet.")
     else:
         status_filter = st.selectbox("Filter by Status", ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
         if status_filter != "All":
@@ -178,7 +178,7 @@ with tab1:
                         
                         if role == "Admin" and st.button("🗑️ Delete Order", key=f"del_{row['id']}", type="secondary"):
                             soft_delete_order(row['id'], st.session_state.name)
-                            st.success(f"✅ Order {row['id']} deleted!")
+                            st.success(f"Order {row['id']} deleted!")
                             st.rerun()
 
 with tab2:
@@ -210,8 +210,8 @@ with tab2:
                 if save_order(order):
                     st.success(f"🎉 Order **{new_id}** created!")
                 else:
-                    st.error("Failed to save. Check connection.")
+                    st.error("Failed to save order")
     else:
         st.warning("Only Admin can create orders.")
 
-st.sidebar.info("✅ Using Supabase")
+st.sidebar.info("✅ Supabase Connected")
