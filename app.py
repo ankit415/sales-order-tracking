@@ -6,10 +6,9 @@ import datetime
 st.set_page_config(page_title="Sales Order Tracker", layout="wide", page_icon="🚚")
 st.title("🚚 Sales Order Tracking Dashboard")
 
-# ====================== DATABASE SETUP (Fixed) ======================
+# ====================== DATABASE ======================
 def init_db():
     conn = sqlite3.connect('sales_orders.db')
-    # Create table with is_deleted column
     conn.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,
@@ -25,11 +24,10 @@ def init_db():
             is_deleted INTEGER DEFAULT 0
         )
     ''')
-    # Safely add is_deleted column if it doesn't exist (for old databases)
     try:
         conn.execute("ALTER TABLE orders ADD COLUMN is_deleted INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    except:
+        pass
     conn.commit()
     conn.close()
 
@@ -42,14 +40,10 @@ def load_orders(include_deleted=False):
     conn = get_db()
     df = pd.read_sql_query("SELECT * FROM orders ORDER BY id DESC", conn)
     conn.close()
-    
     if df.empty:
         return pd.DataFrame()
-    
-    # Ensure is_deleted column exists in DataFrame
     if 'is_deleted' not in df.columns:
         df['is_deleted'] = 0
-    
     if not include_deleted:
         df = df[df['is_deleted'] == 0]
     return df
@@ -60,7 +54,6 @@ def get_next_order_id():
     cursor.execute("SELECT id FROM orders ORDER BY id DESC LIMIT 1")
     last = cursor.fetchone()
     conn.close()
-    
     if last is None:
         return "2026-27/ORD/1"
     try:
@@ -79,22 +72,16 @@ def save_order(order_dict):
 def update_order_status(order_id, new_status, updated_by):
     conn = get_db()
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn.execute("""
-        UPDATE orders 
-        SET status = ?, last_updated = ?, updated_by = ?
-        WHERE id = ?
-    """, (new_status, now, updated_by, order_id))
+    conn.execute("UPDATE orders SET status = ?, last_updated = ?, updated_by = ? WHERE id = ?", 
+                (new_status, now, updated_by, order_id))
     conn.commit()
     conn.close()
 
 def soft_delete_order(order_id, deleted_by):
     conn = get_db()
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn.execute("""
-        UPDATE orders 
-        SET is_deleted = 1, last_updated = ?, updated_by = ?
-        WHERE id = ?
-    """, (now, deleted_by, order_id))
+    conn.execute("UPDATE orders SET is_deleted = 1, last_updated = ?, updated_by = ? WHERE id = ?", 
+                (now, deleted_by, order_id))
     conn.commit()
     conn.close()
 
@@ -115,18 +102,16 @@ if not st.session_state.authenticated:
             "production": {"password": "prod123", "role": "Production", "name": "Production Head"},
             "logistics": {"password": "logi123", "role": "Logistics", "name": "Logistics Team"}
         }
-        
         if username in users and users[username]["password"] == password:
             st.session_state.authenticated = True
             st.session_state.role = users[username]["role"]
             st.session_state.name = users[username]["name"]
-            st.success(f"Welcome {st.session_state.name}!")
             st.rerun()
         else:
-            st.error("Incorrect username or password")
+            st.error("Incorrect credentials")
     st.stop()
 
-st.sidebar.success(f"✅ Logged in as **{st.session_state.name}** ({st.session_state.role})")
+st.sidebar.success(f"✅ {st.session_state.name} ({st.session_state.role})")
 
 if st.sidebar.button("Logout"):
     for key in list(st.session_state.keys()):
@@ -135,7 +120,7 @@ if st.sidebar.button("Logout"):
 
 role = st.session_state.role
 
-# ====================== MAIN APP ======================
+# ====================== MAIN DASHBOARD ======================
 tab1, tab2 = st.tabs(["📋 Dashboard", "➕ New Order"])
 
 with tab1:
@@ -143,14 +128,12 @@ with tab1:
     df = load_orders(include_deleted=True)
     
     if df.empty:
-        st.info("No orders yet.")
+        st.info("No orders found.")
     else:
-        status_filter = st.selectbox("Filter by Status", 
-                                   ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
-        
+        status_filter = st.selectbox("Filter by Status", ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
         if status_filter != "All":
             df = df[df['status'] == status_filter]
-        
+
         for _, row in df.iterrows():
             is_deleted = row.get('is_deleted', 0) == 1
             
@@ -184,6 +167,7 @@ with tab1:
                     if is_deleted:
                         st.markdown("**🗑️ Deleted**", unsafe_allow_html=True)
                     else:
+                        # Action buttons for Production & Logistics
                         if role == "Production":
                             if row['status'] == "Pending":
                                 if st.button("▶️ Start Production", key=f"start_{row['id']}"):
@@ -198,20 +182,19 @@ with tab1:
                             if row['status'] == "Ready for Dispatch":
                                 if st.button("📄 Generate Invoice", key=f"inv_{row['id']}"):
                                     update_order_status(row['id'], "Invoiced", st.session_state.name)
-                                    st.success("✅ Tax Invoice Generated!")
+                                    st.success("✅ Invoice Generated!")
                                     st.rerun()
                             elif row['status'] == "Invoiced":
                                 if st.button("🚚 Mark Shipped", key=f"ship_{row['id']}"):
                                     update_order_status(row['id'], "Shipped", st.session_state.name)
-                                    st.success("✅ Order Shipped!")
+                                    st.success("✅ Shipped!")
                                     st.rerun()
-                    
-                    # Admin Delete Button
-                    if role == "Admin" and not is_deleted:
-                        if st.button("🗑️ Delete Order", key=f"del_{row['id']}", type="secondary"):
-                            if st.checkbox("Confirm permanent delete?", key=f"conf_{row['id']}"):
+                        
+                        # ADMIN DELETE - Improved Logic
+                        if role == "Admin":
+                            if st.button("🗑️ Delete Order", key=f"delbtn_{row['id']}", type="secondary"):
                                 soft_delete_order(row['id'], st.session_state.name)
-                                st.success(f"Order {row['id']} has been deleted.")
+                                st.success(f"✅ Order **{row['id']}** deleted successfully!")
                                 st.rerun()
 
                 st.caption(f"Last updated: {row.get('last_updated', '')} by {row.get('updated_by', '')}")
@@ -227,25 +210,18 @@ with tab2:
             tech_req = st.text_area("Technical Requirements", height=120)
             additional = st.text_area("Additional Information", height=100)
             
-            submitted = st.form_submit_button("Create Order", type="primary")
-            if submitted and product:
+            if st.form_submit_button("Create Order", type="primary") and product:
                 new_id = get_next_order_id()
                 order = {
-                    "id": new_id,
-                    "product": product,
-                    "qty": int(qty),
-                    "expected_dispatch": str(exp_date),
-                    "customer": customer or "—",
-                    "tech_req": tech_req,
-                    "additional": additional,
-                    "status": "Pending",
-                    "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "updated_by": st.session_state.name,
-                    "is_deleted": 0
+                    "id": new_id, "product": product, "qty": int(qty),
+                    "expected_dispatch": str(exp_date), "customer": customer or "—",
+                    "tech_req": tech_req, "additional": additional,
+                    "status": "Pending", "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "updated_by": st.session_state.name, "is_deleted": 0
                 }
                 save_order(order)
-                st.success(f"🎉 Order **{new_id}** created successfully!")
+                st.success(f"🎉 Order **{new_id}** created!")
     else:
-        st.warning("🔒 Only **Admin** can create new orders.")
+        st.warning("Only Admin can create orders.")
 
-st.sidebar.info("**Deleted orders** appear greyed out with strikethrough for all users.")
+st.sidebar.info("Deleted orders are visible to everyone but greyed out.")
