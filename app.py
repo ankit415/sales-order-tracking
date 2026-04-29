@@ -1,15 +1,18 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import datetime
+from st_supabase_connection import SupabaseConnection
 
 st.set_page_config(page_title="Sales Order Tracker", layout="wide", page_icon="🚚")
 st.title("🚚 Sales Order Tracking Dashboard")
 
-# ====================== DATABASE ======================
-def init_db():
-    conn = sqlite3.connect('sales_orders.db')
-    conn.execute('''
+# ====================== SUPABASE CONNECTION ======================
+conn = st.connection("supabase", type=SupabaseConnection)
+
+# Create table if not exists
+@st.cache_resource
+def init_table():
+    conn.query("""
         CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,
             product TEXT,
@@ -23,25 +26,19 @@ def init_db():
             updated_by TEXT,
             is_deleted INTEGER DEFAULT 0
         )
-    ''')
-    try:
-        conn.execute("ALTER TABLE orders ADD COLUMN is_deleted INTEGER DEFAULT 0")
-    except:
-        pass
-    conn.commit()
-    conn.close()
+    """).execute()
 
-init_db()
+init_table()
 
-def get_db():
-    return sqlite3.connect('sales_orders.db')
-
+# ====================== HELPER FUNCTIONS ======================
 def load_orders(include_deleted=False):
-    conn = get_db()
-    df = pd.read_sql_query("SELECT * FROM orders ORDER BY id DESC", conn)
-    conn.close()
+    query = "SELECT * FROM orders ORDER BY id DESC"
+    response = conn.query(query).execute()
+    df = pd.DataFrame(response.data) if response.data else pd.DataFrame()
+    
     if df.empty:
         return pd.DataFrame()
+    
     if 'is_deleted' not in df.columns:
         df['is_deleted'] = 0
     if not include_deleted:
@@ -49,41 +46,35 @@ def load_orders(include_deleted=False):
     return df
 
 def get_next_order_id():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM orders ORDER BY id DESC LIMIT 1")
-    last = cursor.fetchone()
-    conn.close()
-    if last is None:
+    response = conn.query("SELECT id FROM orders ORDER BY id DESC LIMIT 1").execute()
+    last = response.data[0] if response.data else None
+    
+    if not last:
         return "2026-27/ORD/1"
     try:
-        last_num = int(last[0].split('/')[-1])
+        last_num = int(last['id'].split('/')[-1])
         return f"2026-27/ORD/{last_num + 1}"
     except:
         return "2026-27/ORD/1"
 
 def save_order(order_dict):
-    conn = get_db()
-    df = pd.DataFrame([order_dict])
-    df.to_sql('orders', conn, if_exists='append', index=False)
-    conn.commit()
-    conn.close()
+    conn.table("orders").insert(order_dict).execute()
 
 def update_order_status(order_id, new_status, updated_by):
-    conn = get_db()
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn.execute("UPDATE orders SET status = ?, last_updated = ?, updated_by = ? WHERE id = ?", 
-                (new_status, now, updated_by, order_id))
-    conn.commit()
-    conn.close()
+    conn.table("orders").update({
+        "status": new_status,
+        "last_updated": now,
+        "updated_by": updated_by
+    }).eq("id", order_id).execute()
 
 def soft_delete_order(order_id, deleted_by):
-    conn = get_db()
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn.execute("UPDATE orders SET is_deleted = 1, last_updated = ?, updated_by = ? WHERE id = ?", 
-                (now, deleted_by, order_id))
-    conn.commit()
-    conn.close()
+    conn.table("orders").update({
+        "is_deleted": 1,
+        "last_updated": now,
+        "updated_by": deleted_by
+    }).eq("id", order_id).execute()
 
 # ====================== LOGIN ======================
 if "authenticated" not in st.session_state:
@@ -120,7 +111,7 @@ if st.sidebar.button("Logout"):
 
 role = st.session_state.role
 
-# ====================== MAIN DASHBOARD ======================
+# ====================== MAIN APP ======================
 tab1, tab2 = st.tabs(["📋 Dashboard", "➕ New Order"])
 
 with tab1:
@@ -128,7 +119,7 @@ with tab1:
     df = load_orders(include_deleted=True)
     
     if df.empty:
-        st.info("No orders found.")
+        st.info("No orders yet. Create your first one!")
     else:
         status_filter = st.selectbox("Filter by Status", ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
         if status_filter != "All":
@@ -145,7 +136,6 @@ with tab1:
                         st.write(f"~~**{row['id']}** — {row['product']}~~ 🗑️")
                     else:
                         st.write(f"**{row['id']}** — {row['product']}")
-                    
                     st.caption(f"👤 {row.get('customer', '—')} | Qty: **{row['qty']}**")
                     
                     if row.get('tech_req'):
@@ -167,7 +157,6 @@ with tab1:
                     if is_deleted:
                         st.markdown("**🗑️ Deleted**", unsafe_allow_html=True)
                     else:
-                        # Action buttons for Production & Logistics
                         if role == "Production":
                             if row['status'] == "Pending":
                                 if st.button("▶️ Start Production", key=f"start_{row['id']}"):
@@ -190,14 +179,11 @@ with tab1:
                                     st.success("✅ Shipped!")
                                     st.rerun()
                         
-                        # ADMIN DELETE - Improved Logic
                         if role == "Admin":
-                            if st.button("🗑️ Delete Order", key=f"delbtn_{row['id']}", type="secondary"):
+                            if st.button("🗑️ Delete Order", key=f"del_{row['id']}", type="secondary"):
                                 soft_delete_order(row['id'], st.session_state.name)
-                                st.success(f"✅ Order **{row['id']}** deleted successfully!")
+                                st.success(f"Order {row['id']} deleted!")
                                 st.rerun()
-
-                st.caption(f"Last updated: {row.get('last_updated', '')} by {row.get('updated_by', '')}")
 
 with tab2:
     if role == "Admin":
@@ -213,15 +199,21 @@ with tab2:
             if st.form_submit_button("Create Order", type="primary") and product:
                 new_id = get_next_order_id()
                 order = {
-                    "id": new_id, "product": product, "qty": int(qty),
-                    "expected_dispatch": str(exp_date), "customer": customer or "—",
-                    "tech_req": tech_req, "additional": additional,
-                    "status": "Pending", "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "updated_by": st.session_state.name, "is_deleted": 0
+                    "id": new_id,
+                    "product": product,
+                    "qty": int(qty),
+                    "expected_dispatch": str(exp_date),
+                    "customer": customer or "—",
+                    "tech_req": tech_req,
+                    "additional": additional,
+                    "status": "Pending",
+                    "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "updated_by": st.session_state.name,
+                    "is_deleted": 0
                 }
                 save_order(order)
-                st.success(f"🎉 Order **{new_id}** created!")
+                st.success(f"🎉 Order **{new_id}** created successfully!")
     else:
         st.warning("Only Admin can create orders.")
 
-st.sidebar.info("Deleted orders are visible to everyone but greyed out.")
+st.sidebar.info("Data is now stored in Supabase (persistent & reliable)")
