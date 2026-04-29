@@ -37,6 +37,22 @@ def load_orders():
     conn.close()
     return df if not df.empty else pd.DataFrame()
 
+def get_next_order_id():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM orders ORDER BY id DESC LIMIT 1")
+    last = cursor.fetchone()
+    conn.close()
+    
+    if last is None:
+        return "2026-27/ORD/1"
+    
+    try:
+        last_num = int(last[0].split('/')[-1])
+        return f"2026-27/ORD/{last_num + 1}"
+    except:
+        return "2026-27/ORD/1"
+
 def save_order(order_dict):
     conn = get_db()
     df = pd.DataFrame([order_dict])
@@ -55,13 +71,12 @@ def update_order_status(order_id, new_status, updated_by):
     conn.commit()
     conn.close()
 
-# ====================== SIMPLE USER ROLES (No external package needed) ======================
+# ====================== LOGIN ======================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.role = None
     st.session_state.name = None
 
-# Login Form
 if not st.session_state.authenticated:
     st.subheader("🔐 Login")
     username = st.text_input("Username", placeholder="admin / production / logistics")
@@ -82,9 +97,8 @@ if not st.session_state.authenticated:
             st.rerun()
         else:
             st.error("Incorrect username or password")
-    st.stop()  # Stop execution until logged in
+    st.stop()
 
-# Show logged-in user
 st.sidebar.success(f"✅ Logged in as **{st.session_state.name}** ({st.session_state.role})")
 
 if st.sidebar.button("Logout"):
@@ -102,7 +116,7 @@ with tab1:
     df = load_orders()
     
     if df.empty:
-        st.info("No orders yet. Go to 'New Order' tab (Admin only).")
+        st.info("No orders yet. Create your first order in the 'New Order' tab.")
     else:
         status_filter = st.selectbox("Filter by Status", 
                                    ["All", "Pending", "In Production", "Ready for Dispatch", "Invoiced", "Shipped"])
@@ -112,29 +126,36 @@ with tab1:
         
         for _, row in df.iterrows():
             with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([3, 1.5, 2, 2])
+                col1, col2, col3 = st.columns([3, 2, 2])
                 
                 with col1:
                     st.write(f"**{row['id']}** — {row['product']}")
                     st.caption(f"👤 {row.get('customer', '—')} | Qty: **{row['qty']}**")
+                    
+                    # Technical Requirements & Additional Info - Clearly Visible
+                    if row['tech_req']:
+                        st.markdown("**🔧 Technical Requirements:**")
+                        st.info(row['tech_req'])
+                    
+                    if row['additional']:
+                        st.markdown("**📋 Additional Information:**")
+                        st.info(row['additional'])
                 
                 with col2:
                     st.metric("Expected Dispatch", row['expected_dispatch'])
-                
-                with col3:
                     colors = {"Pending":"orange", "In Production":"blue", "Ready for Dispatch":"green", 
                              "Invoiced":"purple", "Shipped":"gray"}
                     color = colors.get(row['status'], "gray")
                     st.markdown(f"**Status:** <span style='color:{color}'>{row['status']}</span>", unsafe_allow_html=True)
                 
-                with col4:
+                with col3:
                     if role == "Production":
                         if row['status'] == "Pending":
                             if st.button("▶️ Start Production", key=f"start_{row['id']}"):
                                 update_order_status(row['id'], "In Production", st.session_state.name)
                                 st.rerun()
                         elif row['status'] == "In Production":
-                            if st.button("✅ Mark Ready", key=f"ready_{row['id']}"):
+                            if st.button("✅ Mark Ready for Dispatch", key=f"ready_{row['id']}"):
                                 update_order_status(row['id'], "Ready for Dispatch", st.session_state.name)
                                 st.rerun()
                     
@@ -150,7 +171,7 @@ with tab1:
                                 st.success("✅ Order Shipped!")
                                 st.rerun()
                 
-                st.caption(f"Last updated: {row['last_updated']} by {row['updated_by']}")
+                st.caption(f"Last updated: {row.get('last_updated', '')} by {row.get('updated_by', '')}")
 
 with tab2:
     if role == "Admin":
@@ -158,14 +179,15 @@ with tab2:
         with st.form("new_order_form", clear_on_submit=True):
             product = st.text_input("Product Name *", placeholder="High-Precision Gearbox")
             qty = st.number_input("Quantity *", min_value=1, value=10)
-            exp_date = st.date_input("Expected Dispatch Date", datetime.date.today() + datetime.timedelta(days=15))
+            exp_date = st.date_input("Expected Dispatch Date", 
+                                   datetime.date.today() + datetime.timedelta(days=15))
             customer = st.text_input("Customer Name", placeholder="Tata Motors")
-            tech_req = st.text_area("Technical Requirements")
-            additional = st.text_area("Additional Information")
+            tech_req = st.text_area("Technical Requirements", height=120)
+            additional = st.text_area("Additional Information", height=100)
             
             submitted = st.form_submit_button("Create Order", type="primary")
             if submitted and product:
-                new_id = f"ORD-{datetime.datetime.now().strftime('%y%m%d%H%M')}"
+                new_id = get_next_order_id()
                 order = {
                     "id": new_id,
                     "product": product,
@@ -185,7 +207,7 @@ with tab2:
 
 st.sidebar.info("""
 **Workflow:**
-- Admin creates order → Pending
-- Production updates to Ready
-- Logistics does Invoice → Shipped
+Admin → Creates Order (2026-27/ORD/1 onwards)
+Production → Sees Tech Req & Additional Info clearly
+Logistics → Invoice & Ship
 """)
