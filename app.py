@@ -12,6 +12,7 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # ====================== HELPER FUNCTIONS ======================
 def load_orders(include_deleted=False):
     try:
+        # Correct syntax for this connector
         response = conn.query("*", table="orders", ttl=0).execute()
         df = pd.DataFrame(response.data) if response.data else pd.DataFrame()
         
@@ -20,13 +21,12 @@ def load_orders(include_deleted=False):
         
         if 'is_deleted' not in df.columns:
             df['is_deleted'] = 0
-        
         if not include_deleted:
             df = df[df['is_deleted'] == 0]
         
         return df.sort_values(by='id', ascending=False)
     except Exception as e:
-        st.error(f"Error loading data: {e}")
+        st.error(f"❌ Error loading orders: {str(e)}")
         return pd.DataFrame()
 
 def get_next_order_id():
@@ -36,7 +36,7 @@ def get_next_order_id():
         if not data:
             return "2026-27/ORD/1"
         
-        last_id = max(item['id'] for item in data)
+        last_id = max([item['id'] for item in data])
         try:
             last_num = int(last_id.split('/')[-1])
             return f"2026-27/ORD/{last_num + 1}"
@@ -49,7 +49,8 @@ def save_order(order_dict):
     try:
         conn.table("orders").insert(order_dict).execute()
         return True
-    except:
+    except Exception as e:
+        st.error(f"Save error: {e}")
         return False
 
 def update_order_status(order_id, new_status, updated_by):
@@ -207,10 +208,10 @@ with tab2:
                     "is_deleted": 0
                 }
                 if save_order(order):
-                    st.success(f"🎉 Order **{new_id}** created successfully!")
+                    st.success(f"🎉 Order **{new_id}** created!")
                 else:
-                    st.error("Failed to save order. Check Supabase connection.")
+                    st.error("Failed to save. Check connection.")
     else:
         st.warning("Only Admin can create orders.")
 
-st.sidebar.info("✅ Connected to Supabase")
+st.sidebar.info("✅ Using Supabase")
