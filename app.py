@@ -6,9 +6,10 @@ import datetime
 st.set_page_config(page_title="Sales Order Tracker", layout="wide", page_icon="🚚")
 st.title("🚚 Sales Order Tracking Dashboard")
 
-# ====================== DATABASE ======================
+# ====================== DATABASE SETUP (Fixed) ======================
 def init_db():
     conn = sqlite3.connect('sales_orders.db')
+    # Create table with is_deleted column
     conn.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,
@@ -24,6 +25,11 @@ def init_db():
             is_deleted INTEGER DEFAULT 0
         )
     ''')
+    # Safely add is_deleted column if it doesn't exist (for old databases)
+    try:
+        conn.execute("ALTER TABLE orders ADD COLUMN is_deleted INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -34,12 +40,19 @@ def get_db():
 
 def load_orders(include_deleted=False):
     conn = get_db()
-    query = "SELECT * FROM orders ORDER BY id DESC"
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query("SELECT * FROM orders ORDER BY id DESC", conn)
     conn.close()
+    
+    if df.empty:
+        return pd.DataFrame()
+    
+    # Ensure is_deleted column exists in DataFrame
+    if 'is_deleted' not in df.columns:
+        df['is_deleted'] = 0
+    
     if not include_deleted:
         df = df[df['is_deleted'] == 0]
-    return df if not df.empty else pd.DataFrame()
+    return df
 
 def get_next_order_id():
     conn = get_db()
@@ -127,7 +140,7 @@ tab1, tab2 = st.tabs(["📋 Dashboard", "➕ New Order"])
 
 with tab1:
     st.subheader("All Sales Orders")
-    df = load_orders(include_deleted=True)   # Admin sees deleted too
+    df = load_orders(include_deleted=True)
     
     if df.empty:
         st.info("No orders yet.")
@@ -139,25 +152,23 @@ with tab1:
             df = df[df['status'] == status_filter]
         
         for _, row in df.iterrows():
-            is_deleted = row['is_deleted'] == 1
-            opacity = "0.6" if is_deleted else "1"
+            is_deleted = row.get('is_deleted', 0) == 1
             
             with st.container(border=True):
                 col1, col2, col3 = st.columns([3.5, 2, 2.5])
                 
                 with col1:
                     if is_deleted:
-                        st.write(f"~~**{row['id']}** — {row['product']}~~")
+                        st.write(f"~~**{row['id']}** — {row['product']}~~ 🗑️")
                     else:
                         st.write(f"**{row['id']}** — {row['product']}")
                     
                     st.caption(f"👤 {row.get('customer', '—')} | Qty: **{row['qty']}**")
                     
-                    # Technical & Additional Info - Always Visible
-                    if row['tech_req']:
+                    if row.get('tech_req'):
                         st.markdown("**🔧 Technical Requirements:**")
                         st.info(row['tech_req'])
-                    if row['additional']:
+                    if row.get('additional'):
                         st.markdown("**📋 Additional Information:**")
                         st.info(row['additional'])
                 
@@ -171,7 +182,7 @@ with tab1:
                 
                 with col3:
                     if is_deleted:
-                        st.markdown("<span style='color:gray'>🗑️ **Deleted**</span>", unsafe_allow_html=True)
+                        st.markdown("**🗑️ Deleted**", unsafe_allow_html=True)
                     else:
                         if role == "Production":
                             if row['status'] == "Pending":
@@ -198,9 +209,9 @@ with tab1:
                     # Admin Delete Button
                     if role == "Admin" and not is_deleted:
                         if st.button("🗑️ Delete Order", key=f"del_{row['id']}", type="secondary"):
-                            if st.checkbox("Confirm Delete?", key=f"conf_{row['id']}"):
+                            if st.checkbox("Confirm permanent delete?", key=f"conf_{row['id']}"):
                                 soft_delete_order(row['id'], st.session_state.name)
-                                st.success(f"Order {row['id']} deleted.")
+                                st.success(f"Order {row['id']} has been deleted.")
                                 st.rerun()
 
                 st.caption(f"Last updated: {row.get('last_updated', '')} by {row.get('updated_by', '')}")
@@ -237,4 +248,4 @@ with tab2:
     else:
         st.warning("🔒 Only **Admin** can create new orders.")
 
-st.sidebar.info("**Deleted orders** are visible to all but greyed out.")
+st.sidebar.info("**Deleted orders** appear greyed out with strikethrough for all users.")
