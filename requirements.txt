@@ -1,4 +1,3 @@
 streamlit
 pandas
-streamlit-authenticator
-python-dateutil
+st-supabase-connection
